@@ -1,0 +1,84 @@
+# Multi-Agent System Configuration
+
+# Model Configuration
+model:
+  identifier: "Qwen/Qwen2.5-7B-Instruct"  # Options: deepseek-ai/DeepSeek-V3, Qwen/Qwen2.5-7B-Instruct
+  max_tokens: 512
+  temperature: 0.7
+
+# Agent Configuration
+agents:
+  num_agents: 3
+  roles:
+    - planner      # Plans the overall approach
+    - coder        # Implements solutions
+    - reviewer     # Reviews and validates outputs
+  # Optional: Add more roles for larger teams
+  # - tester
+  # - documenter
+
+# Environment Configuration
+environment:
+  type: "default"  # Options: default, hotpotqa
+  max_rounds: 5
+  mode: "sequential"  # Options: parallel, sequential, message_passing
+
+  # HotpotQA specific settings
+  hotpotqa:
+    data_path: "data/hotpot_dev_fullwiki_v1.json"
+    max_samples: 100
+    split: "validation"  # validation, train, test
+
+# Reward Configuration
+reward:
+  base_reward: 1.0
+  method: "shapley"  # Options: shapley, uniform, proportional
+  shapley:
+    use_monte_carlo: true
+    num_samples: 1000  # Higher = more accurate but slower
+
+# Experiment Configuration
+experiments:
+  output_dir: "results/experiments"
+  save_intermediate: true
+
+  tasks:
+    - "Write a Python function to calculate the factorial of a number recursively."
+    - "Implement a binary search algorithm in Python."
+    - "Design a simple REST API for a todo list application using Flask."
+    - "Explain the concept of gradient descent in machine learning."
+    - "Write a function to find the longest common subsequence of two strings."
+
+# Evaluation Configuration
+evaluation:
+  metrics:
+    - accuracy
+    - fairness_index
+    - reward_variance
+    - mean_reward
+    - std_deviation
+
+  baselines:
+    - uniform
+    - proportional
+
+# Visualization Configuration
+visualization:
+  output_dir: "results/plots"
+  dpi: 300
+  figure_size: [10, 6]
+  plot_types:
+    - reward_comparison
+    - reward_distribution
+    - aggregate_metrics
+
+# API Configuration (set via environment variables)
+# DEEPSEEK_API_KEY=your-key-here
+# OPENAI_API_KEY=your-key-here
+# ANTHROPIC_API_KEY=your-key-here
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  save_logs: true
+  log_dir: "logs"

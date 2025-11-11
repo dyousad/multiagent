@@ -1,0 +1,44 @@
+experiment:
+  # Data configuration
+  data_path: data/hotpot_dev_fullwiki_v1.json
+  max_samples: 20
+
+  # Agent configuration
+  num_agents: 4
+  model: Qwen/Qwen2.5-7B-Instruct
+
+  # Feature flags
+  use_decomposer: true
+  use_rag: true
+  use_dynamic_credit: true
+  use_reasoner: true
+
+  # Model configuration
+  retriever_model: BAAI/bge-large-en-v1.5
+  temperature: 0.7
+  max_tokens: 512
+
+  # RAG configuration
+  retriever_top_k: 10
+  retriever_rerank: true
+  verifier_min_overlap: 0.5
+  verifier_use_spacy: true
+
+  # Reward configuration
+  reward_condition: valid_answer_only
+  base_reward: 1.0
+  use_monte_carlo: true
+  shapley_samples: 100
+
+  # Logging configuration
+  log_level: info
+  output_path: results/hotpotqa_rag_fix/
+  save_per_task: true
+  log_evidence_paths: true
+
+  # Agent roles
+  agent_roles:
+    - planner
+    - coder
+    - reviewer
+    - tester

@@ -1,0 +1,153 @@
+name: multiagent_hotpotqa_rag_workflow
+description: >
+  Extend existing multi-agent collaboration system with RAG for HotpotQA.
+  Adds DecomposerAgent, RetrieverAgent, EvidenceVerifierAgent, RetrievalManager,
+  integrates dynamic credit allocation, and implements evidence reranking + tracking.
+
+version: "1.0"
+
+steps:
+  - name: create_decomposer_agent
+    action: create_file
+    path: src/decomposer_agent.py
+    content: |
+      from .agent import BaseAgent
+
+      class DecomposerAgent(BaseAgent):
+          """
+          Splits complex questions into smaller sub-questions for multi-hop QA.
+          """
+          def act(self, task):
+              q = task["question"]
+              prompt = (
+                  f"Decompose the following complex question into clear, smaller sub-questions:\\n"
+                  f"Question: {q}\\nSub-questions:"
+              )
+              response = self.llm.generate(prompt)
+              sub_questions = [s.strip("- ").strip() for s in response.split("\\n") if s.strip()]
+              return {"sub_questions": sub_questions}
+
+  - name: create_retriever_agent
+    action: create_file
+    path: src/retriever_agent.py
+    content: |
+      from .agent import BaseAgent
+      from .retrieval_manager import RetrievalManager
+
+      class RetrieverAgent(BaseAgent):
+          """
+          Retrieves evidence passages for a given sub-question using RAG.
+          """
+          def __init__(self, name, retriever_cfg, **kwargs):
+              super().__init__(name, **kwargs)
+              self.rm = RetrievalManager(**retriever_cfg)
+
+          def act(self, task):
+              sub_q = task["sub_question"]
+              evidence = self.rm.retrieve(sub_q, top_k=10)
+              # rerank by keyword overlap
+              keywords = [w.lower() for w in sub_q.split() if w.isalpha()]
+              scored = [(sum(k in e.lower() for k in keywords), e) for e in evidence]
+              reranked = [e for _, e in sorted(scored, reverse=True)]
+              return {"evidence": reranked[:5], "path": [e[:80] for e in reranked[:5]]}
+
+  - name: create_evidence_verifier_agent
+    action: create_file
+    path: src/evidence_verifier_agent.py
+    content: |
+      from .agent import BaseAgent
+
+      class EvidenceVerifierAgent(BaseAgent):
+          """
+          Verifies whether retrieved evidence contains key entities or facts.
+          Can trigger rewriting of sub-questions if verification fails.
+          """
+          def act(self, task):
+              question = task["sub_question"]
+              evidence = task["evidence"]
+              keywords = [w for w in question.split() if w[0].isupper()]
+              matched = sum(any(k in e for e in evidence) for k in keywords)
+              verified = matched >= max(1, len(keywords)//2)
+
+              if not verified:
+                  rewrite_prompt = (
+                      f"Rewrite or expand the question to improve retrieval:\\n"
+                      f"Original: {question}\\nNew version:"
+                  )
+                  new_q = self.llm.generate(rewrite_prompt)
+                  return {"verified": False, "revised_question": new_q.strip()}
+              return {"verified": True}
+
+  - name: create_retrieval_manager
+    action: create_file
+    path: src/retrieval_manager.py
+    content: |
+      from sentence_transformers import SentenceTransformer
+      import faiss, numpy as np
+
+      class RetrievalManager:
+          def __init__(self, corpus_path="data/hotpotqa_corpus.json",
+                       model_name="multi-qa-mpnet-base-dot-v1", top_k=5):
+              import json
+              with open(corpus_path) as f:
+                  self.corpus = json.load(f)
+              self.model = SentenceTransformer(model_name)
+              self.embeddings = self.model.encode(
+                  [c["text"] for c in self.corpus], show_progress_bar=False
+              )
+              self.index = faiss.IndexFlatIP(self.embeddings.shape[1])
+              self.index.add(self.embeddings)
+              self.top_k = top_k
+
+          def retrieve(self, query, top_k=None):
+              q_emb = self.model.encode([query])
+              k = top_k or self.top_k
+              scores, idx = self.index.search(q_emb, k)
+              return [self.corpus[i]["text"] for i in idx[0]]
+
+  - name: modify_controller_add_pipeline
+    action: patch_file
+    path: src/controller.py
+    pattern: "class"
+    insertion: |
+      async def run_hotpotqa_pipeline(self, task):
+          subqs = self.agents["decomposer"].act(task)["sub_questions"]
+          agent_outputs = {}
+          for sq in subqs:
+              retrieval = self.agents["retriever"].act({"sub_question": sq})
+              verify = self.agents["verifier"].act({
+                  "sub_question": sq,
+                  "evidence": retrieval["evidence"]
+              })
+              agent_outputs[sq] = {**retrieval, **verify}
+          return agent_outputs
+
+  - name: extend_reward_manager_dynamic_credit
+    action: patch_file
+    path: src/reward_manager.py
+    pattern: "class"
+    insertion: |
+      import numpy as np
+
+      class RewardManager:
+          def update_credit_with_counterfactual(self, agent_outputs, final_answer):
+              base_score = self.evaluate_answer(final_answer)
+              for agent, output in agent_outputs.items():
+                  cf_outputs = {k: v for k, v in agent_outputs.items() if k != agent}
+                  cf_score = self.evaluate_combination(cf_outputs)
+                  delta = base_score - cf_score
+                  self.credit[agent] = max(self.credit.get(agent, 0), 0) + max(delta, 0)
+
+  - name: update_experiment_logging
+    action: patch_file
+    path: scripts/run_experiments.py
+    pattern: "results"
+    insertion: |
+      log_entry = {
+          "question": task["question"],
+          "sub_questions": subqs,
+          "evidence_paths": [out["path"] for out in agent_outputs.values()],
+          "final_answer": final_answer,
+          "credit": reward_manager.credit
+      }
+      logger.save_json(log_entry, f"results/{task_id}.json")
