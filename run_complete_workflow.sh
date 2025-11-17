@@ -22,7 +22,7 @@ if command -v conda >/dev/null 2>&1; then
     else
         echo "⚠️  Conda environment 'vlm-anchor' not found"
         echo "Creating Python virtual environment instead..."
-        python -m venv vlm-anchor-venv
+        python3 -m venv vlm-anchor-venv
         source vlm-anchor-venv/bin/activate
         echo "✓ Created and activated virtual environment: vlm-anchor-venv"
 
@@ -39,7 +39,7 @@ else
     echo "Conda not found, using Python virtual environment..."
     if [ ! -d "vlm-anchor-venv" ]; then
         echo "Creating Python virtual environment..."
-        python -m venv vlm-anchor-venv
+        python3 -m venv vlm-anchor-venv
         source vlm-anchor-venv/bin/activate
         echo "✓ Created and activated virtual environment: vlm-anchor-venv"
 
@@ -66,7 +66,7 @@ set -e
 echo "Step 2: Building corpus cache from scratch..."
 echo "----------------------------------------"
 echo "This will take several minutes..."
-python scripts/build_full_corpus_cache.py
+python3 scripts/build_full_corpus_cache.py
 if [ $? -ne 0 ]; then
     echo ""
     echo "❌ Cache building failed!"

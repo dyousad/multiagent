@@ -85,7 +85,7 @@ echo ""
 # Step 1: Run tests
 echo "Step 1: Running integration tests..."
 echo "----------------------------------------"
-python scripts/test_hotpotqa_integration.py
+python3 scripts/test_hotpotqa_integration.py
 if [ $? -ne 0 ]; then
     echo ""
     echo "❌ Tests failed! Please fix errors before running experiments."
@@ -115,7 +115,7 @@ results = run_hotpotqa_experiment(
 )
 EOF
 
-python /tmp/run_hotpotqa_custom.py
+python3 /tmp/run_hotpotqa_custom.py
 if [ $? -ne 0 ]; then
     echo ""
     echo "❌ Experiments failed!"
@@ -126,7 +126,7 @@ echo ""
 # Step 3: Generate visualizations
 echo "Step 3: Generating visualizations..."
 echo "----------------------------------------"
-python scripts/plot_hotpotqa_results.py \
+python3 scripts/plot_hotpotqa_results.py \
     --results results/hotpotqa/hotpotqa_results.json \
     --output_dir results/hotpotqa/plots
 
@@ -150,7 +150,7 @@ echo "  Plots:        results/hotpotqa/plots/"
 echo ""
 echo "Quick view of results:"
 if [ -f "results/hotpotqa/hotpotqa_results.json" ]; then
-    python -c "
+    python3 -c "
 import json
 with open('results/hotpotqa/hotpotqa_results.json') as f:
     data = json.load(f)
