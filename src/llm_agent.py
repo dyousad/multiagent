@@ -7,7 +7,7 @@ import os
 from typing import Any, Dict, Optional
 
 # Add parent directory to path to import api_models
-sys.path.insert(0, os.path.expanduser("~/experiment"))
+# sys.path.insert(0, os.path.expanduser("~/experiment"))
 
 from api_models import APILanguageModel, get_api_model
 from agent import Agent
