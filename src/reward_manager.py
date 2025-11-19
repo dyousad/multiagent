@@ -24,7 +24,8 @@ class RewardManager:
     def __init__(
         self,
         base_reward: float = 1.0,
-        log_file: Optional[Path] = None
+        log_file: Optional[Path] = None,
+        role_weights: Optional[Dict[str, float]] = None
     ):
         """Initialize the reward manager.
 
@@ -34,11 +35,14 @@ class RewardManager:
             Base reward to be distributed among agents.
         log_file : Optional[Path]
             Path to log file for reward history.
+        role_weights : Optional[Dict[str, float]]
+            Weights for different agent roles in credit allocation.
         """
         self.base_reward = base_reward
         self.log_file = log_file
         self.reward_history: List[Dict[str, Any]] = []
         self.credit: Dict[str, float] = {}  # Dynamic credit tracking
+        self.role_weights = role_weights or {}  # Role-based weights
 
     def allocate_shapley_rewards(
         self,
@@ -237,12 +241,14 @@ class RewardManager:
         agent_outputs: Dict[str, str],
         final_answer: str,
         ground_truth: str,
-        evaluate_fn: Optional[Callable[[str, str], float]] = None
+        evaluate_fn: Optional[Callable[[str, str], float]] = None,
+        agent_roles: Optional[Dict[str, str]] = None
     ) -> Dict[str, float]:
         """Dynamically update agent credits based on counterfactual analysis.
 
         This implements test-time credit reallocation by computing marginal
-        contributions of each agent to the final answer quality.
+        contributions of each agent to the final answer quality, with optional
+        role-based weighting.
 
         Parameters
         ----------
@@ -255,6 +261,8 @@ class RewardManager:
         evaluate_fn : Optional[Callable[[str, str], float]]
             Function to evaluate answer quality (prediction, ground_truth) -> score.
             If None, uses exact match.
+        agent_roles : Optional[Dict[str, str]]
+            Dictionary mapping agent_id to their role for weight application.
 
         Returns
         -------
@@ -276,6 +284,7 @@ class RewardManager:
         baseline_score = evaluate_fn(final_answer, ground_truth)
 
         # Compute marginal contribution of each agent via counterfactual
+        marginal_contributions = {}
         for agent_id in agent_outputs.keys():
             # Create counterfactual: what if this agent didn't contribute?
             counterfactual_outputs = {
@@ -293,9 +302,20 @@ class RewardManager:
 
             # Marginal contribution: how much did this agent improve the score?
             delta = baseline_score - counterfactual_score
+            marginal_contributions[agent_id] = max(delta, 0.0)
 
-            # Update credit (accumulate positive contributions)
-            self.credit[agent_id] += max(delta, 0.0)
+        # Apply role weights if provided
+        if agent_roles and self.role_weights:
+            weighted_contributions = {}
+            for agent_id, contribution in marginal_contributions.items():
+                agent_role = agent_roles.get(agent_id, None)
+                weight = self.role_weights.get(agent_role, 1.0) if agent_role else 1.0
+                weighted_contributions[agent_id] = contribution * weight
+            marginal_contributions = weighted_contributions
+
+        # Update credit (accumulate positive contributions)
+        for agent_id, contribution in marginal_contributions.items():
+            self.credit[agent_id] += contribution
 
         return self.credit.copy()
 

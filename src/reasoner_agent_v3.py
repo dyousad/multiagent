@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 import re
+import json
 
 from llm_agent import LLMAgent
 
@@ -257,8 +258,17 @@ Remember: Analyze ALL evidence, make reasonable inferences, extract precise answ
         prompt_parts.append(
             "Remember to make reasonable inferences from the contextual information."
         )
-        prompt_parts.append("Output ONLY the answer itself, nothing else.\n")
-        prompt_parts.append("Answer:")
+        prompt_parts.append("\nIMPORTANT: Output your response in the following JSON format:")
+        prompt_parts.append("{")
+        prompt_parts.append('  "reasoning": "Brief explanation of your reasoning process (1-2 sentences)",')
+        prompt_parts.append('  "answer": "Direct answer only (1-5 words max)"')
+        prompt_parts.append("}")
+        prompt_parts.append("\nExamples:")
+        prompt_parts.append("For yes/no questions:")
+        prompt_parts.append('{"reasoning": "Both were American based on evidence.", "answer": "yes"}')
+        prompt_parts.append("\nFor entity/fact questions:")
+        prompt_parts.append('{"reasoning": "Shirley Temple served as Chief of Protocol.", "answer": "Chief of Protocol"}')
+        prompt_parts.append("\nNow provide your JSON response:")
 
         return "\n".join(prompt_parts)
 
@@ -268,10 +278,11 @@ Remember: Analyze ALL evidence, make reasonable inferences, extract precise answ
         """Extract and normalize the answer from LLM response.
 
         This is a multi-pass extraction process:
-        1. Clean up the response (remove preambles)
-        2. Detect question type
-        3. Extract answer based on type
-        4. Normalize answer format
+        1. Try to parse as JSON (structured output)
+        2. If JSON fails, clean up the response (remove preambles)
+        3. Detect question type
+        4. Extract answer based on type
+        5. Normalize answer format
 
         Parameters
         ----------
@@ -285,9 +296,16 @@ Remember: Analyze ALL evidence, make reasonable inferences, extract precise answ
         str
             The cleaned, normalized answer.
         """
-        # First pass: basic cleanup
+        # First pass: try to parse as JSON
         response = response.strip()
 
+        # Try to extract JSON from the response
+        json_answer = self._try_extract_json_answer(response)
+        if json_answer is not None:
+            # Successfully extracted answer from JSON
+            return self._normalize_final_answer(json_answer, main_question)
+
+        # Fallback to original extraction logic if JSON parsing fails
         # Remove common preambles
         preambles = [
             "based on the evidence,",
@@ -321,6 +339,84 @@ Remember: Analyze ALL evidence, make reasonable inferences, extract precise answ
         # For other questions, try multiple extraction strategies
         answer = self._extract_entity_or_fact(response, main_question)
 
+        return answer
+
+    def _try_extract_json_answer(self, response: str) -> str | None:
+        """Try to extract the answer field from a JSON response.
+
+        Parameters
+        ----------
+        response : str
+            The raw response that might contain JSON.
+
+        Returns
+        -------
+        str | None
+            The extracted answer if JSON parsing succeeds, None otherwise.
+        """
+        try:
+            # Try to find JSON object in the response
+            # First, try direct parsing
+            data = json.loads(response)
+            if isinstance(data, dict) and "answer" in data:
+                return data["answer"]
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON from markdown code blocks
+        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+        matches = re.findall(json_pattern, response, re.DOTALL)
+        for match in matches:
+            try:
+                data = json.loads(match)
+                if isinstance(data, dict) and "answer" in data:
+                    return data["answer"]
+            except json.JSONDecodeError:
+                continue
+
+        # Try to find raw JSON object in the text
+        brace_pattern = r'\{[^{}]*"answer"\s*:\s*"([^"]+)"[^{}]*\}'
+        match = re.search(brace_pattern, response)
+        if match:
+            # Extract the full JSON and parse it
+            json_match = re.search(r'\{[^{}]*\}', response)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group())
+                    if isinstance(data, dict) and "answer" in data:
+                        return data["answer"]
+                except json.JSONDecodeError:
+                    pass
+
+        return None
+
+    def _normalize_final_answer(self, answer: str, main_question: str) -> str:
+        """Normalize the final answer.
+
+        Parameters
+        ----------
+        answer : str
+            The extracted answer.
+        main_question : str
+            The main question for context.
+
+        Returns
+        -------
+        str
+            Normalized answer.
+        """
+        answer = answer.strip()
+
+        # For yes/no questions, ensure lowercase
+        if self._is_yes_no_question(main_question):
+            answer_lower = answer.lower()
+            if "yes" in answer_lower:
+                return "yes"
+            elif "no" in answer_lower:
+                return "no"
+            return answer.lower()
+
+        # For other answers, return as-is but trimmed
         return answer
 
     def _extract_yes_no(self, response: str) -> str:
