@@ -25,6 +25,7 @@ venv/
 ENV/
 env/
 .venv
+vlm-anchor-venv/
 
 # IDE
 .vscode/
