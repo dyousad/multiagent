@@ -127,7 +127,7 @@ class RetrieverAgentV3(Agent):
 
         return {
             "evidence": final_evidence,
-            "path": [e[:80] + "..." if len(e) > 80 else e for e in final_evidence],
+            "path": [e[:180] + "..." if len(e) > 180 else e for e in final_evidence],
             "count": len(final_evidence),
         }
 

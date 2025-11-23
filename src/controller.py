@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional
+import itertools
 
 from agent import Agent, Message
 from environment import Environment, TaskResult
@@ -242,6 +243,43 @@ class MultiAgentController:
         """
         agent_outputs = {}
         sub_questions = []
+
+        # Helper: simple semantic similarity (word-overlap)
+        def semantic_similarity(text1: str, text2: str) -> float:
+            if not text1 or not text2:
+                return 0.0
+            w1 = set(text1.lower().split())
+            w2 = set(text2.lower().split())
+            if not w1 or not w2:
+                return 0.0
+            return len(w1 & w2) / max(len(w1), len(w2))
+
+        # Helper: compute Shapley values for a set of agents' outputs
+        def compute_shapley_for_answers(agent_answers: Dict[str, str], reference: str) -> Dict[str, float]:
+            # value function: similarity between concatenated coalition answers and reference
+            agents = list(agent_answers.keys())
+
+            def v(coalition: List[str]) -> float:
+                if not coalition:
+                    return 0.0
+                combined = " ".join(agent_answers[a] for a in coalition if a in agent_answers)
+                return semantic_similarity(combined, reference)
+
+            n = len(agents)
+            shapley: Dict[str, float] = {a: 0.0 for a in agents}
+
+            # Enumerate all coalitions
+            import math
+            for a in agents:
+                for r in range(0, n):
+                    for subset in itertools.combinations([x for x in agents if x != a], r):
+                        subset = list(subset)
+                        subset_with = subset + [a]
+                        weight = (float(math.factorial(r) * math.factorial(n - r - 1)) / float(math.factorial(n))) if n > 0 else 0.0
+                        marginal = v(subset_with) - v(subset)
+                        shapley[a] += weight * marginal
+
+            return shapley
 
         # Step 1: Decompose question if decomposer is available
         if self.use_decomposer and self.decomposer_agent:

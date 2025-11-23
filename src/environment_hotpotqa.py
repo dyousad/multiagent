@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
+import random
 from environment import Environment, TaskResult
 
 
@@ -54,7 +54,8 @@ class HotpotQAEnvironment(Environment):
 
         # Select subset if max_samples is specified
         if self.max_samples:
-            self.samples = data[:self.max_samples]
+            self.samples = random.sample(data,self.max_samples)
+            # self.samples = data[:self.max_samples]
         else:
             self.samples = data
 

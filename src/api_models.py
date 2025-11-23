@@ -27,10 +27,10 @@ class OpenAIModel(APILanguageModel):
 
     def __init__(self, model_name: str = "gpt-3.5-turbo", api_key: Optional[str] = None) -> None:
         import openai  # type: ignore
-
+        openai.api_base = "https://n1n.ai/v1"
         self.model_name = model_name
         # Load API key from argument or environment
-        key = api_key or os.getenv("OPENAI_API_KEY")
+        key = api_key or os.getenv("OPENAI_API_KEY", "sk-qYNTLF2ymRyxKerLPNYSSQum3fXjHwDcM9rGtTwLXn6HFVoX")
         if not key:
             raise ValueError(
                 "OpenAI API key not provided. Set the OPENAI_API_KEY environment variable or pass api_key."

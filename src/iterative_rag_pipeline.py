@@ -26,7 +26,7 @@ class IterativeRAGPipeline:
 
     def __init__(
         self,
-        decomposer: DecomposerAgent,
+        sub_questions,
         retriever: RetrieverAgentV3,
         verifier: EvidenceVerifierAgent,
         reasoner: ReasonerAgentV3,
@@ -47,7 +47,7 @@ class IterativeRAGPipeline:
         use_iterative : bool
             Whether to use iterative retrieval (default: True).
         """
-        self.decomposer = decomposer
+        self.sub_questions = sub_questions
         self.retriever = retriever
         self.verifier = verifier
         self.reasoner = reasoner
@@ -67,10 +67,12 @@ class IterativeRAGPipeline:
             Pipeline output containing sub-questions, evidence, and answers.
         """
         # Step 1: Decompose question
-        decomposition = self.decomposer.decompose_question(question)
-        sub_questions = decomposition.get("sub_questions", [])
-
-        if not sub_questions:
+        # decomposition = self.decomposer.decompose_question(question)
+        # sub_questions = decomposition.get("sub_questions", [])
+        sub_questions = self.sub_questions
+        print("\n subquestion counts: ",len(sub_questions))
+        
+        if not self.sub_questions:
             return {
                 "sub_questions": [],
                 "agent_outputs": {},
@@ -103,12 +105,14 @@ class IterativeRAGPipeline:
             verified = verification_result.get("verified", False)
 
             # Try to extract intermediate answer for next iteration
-            if evidence and self.use_iterative and i < len(sub_questions) - 1:
+            if evidence and self.use_iterative and i < len(sub_questions):
                 # Use reasoner to get intermediate answer
                 temp_answer = self.reasoner.act({
                     "sub_results": {sub_q: {"evidence": evidence}},
                     "main_question": sub_q
                 })
+                print("\nAnswering subquestion: ",sub_q)
+                print("Generating answer: ",temp_answer)
                 intermediate_answers[sub_q] = temp_answer
 
             # Store results

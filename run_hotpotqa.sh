@@ -27,7 +27,7 @@ echo ""
 # Parse command line arguments
 NUM_SAMPLES=10
 NUM_AGENTS=3
-MODEL="Qwen/Qwen2.5-7B-Instruct"
+MODEL="openai/gpt-5-mini"
 USE_DECOMPOSER=True
 USE_DYNAMIC=True
 

@@ -35,11 +35,12 @@ class DecomposerAgent(LLMAgent):
         temperature : float
             Sampling temperature for LLM.
         """
-        system_prompt = """You are a question decomposition specialist. Your task is to analyze complex multi-hop questions and break them down into simpler sub-questions.
+        system_prompt = """
+You are a question decomposition specialist. Your task is to analyze complex multi-hop questions and break them down into simpler sub-questions.
 
 When given a question:
 1. Identify the key reasoning steps needed
-2. Break down the question into 2-5 sub-questions
+2. Break down the question into 2-3 sub-questions
 3. Order the sub-questions logically (from foundational to final)
 4. Each sub-question should be answerable independently
 
