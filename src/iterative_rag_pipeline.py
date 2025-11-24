@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -30,6 +31,7 @@ class IterativeRAGPipeline:
         retriever: RetrieverAgentV3,
         verifier: EvidenceVerifierAgent,
         reasoner: ReasonerAgentV3,
+        keywords : List[str] = [],
         use_iterative: bool = True
     ):
         """Initialize the iterative RAG pipeline.
@@ -52,6 +54,7 @@ class IterativeRAGPipeline:
         self.verifier = verifier
         self.reasoner = reasoner
         self.use_iterative = use_iterative
+        self.keywords = keywords
 
     def run(self, question: str) -> Dict[str, Any]:
         """Run the RAG pipeline with iterative retrieval.
@@ -88,10 +91,11 @@ class IterativeRAGPipeline:
             # Build enhanced query using previous answers
             enhanced_query = self._build_enhanced_query(
                 sub_q,
+                i,
                 intermediate_answers,
                 sub_questions[:i]  # Previous sub-questions for context
             )
-
+            sub_q = self.sub_questions[i]
             # Retrieve evidence with enhanced query
             retrieval_result = self.retriever.retrieve_evidence(enhanced_query)
             evidence = retrieval_result.get("evidence", [])
@@ -113,7 +117,7 @@ class IterativeRAGPipeline:
                 })
                 print("\nAnswering subquestion: ",sub_q)
                 print("Generating answer: ",temp_answer)
-                intermediate_answers[sub_q] = temp_answer
+                intermediate_answers[i] = temp_answer
 
             # Store results
             agent_outputs[sub_q] = {
@@ -142,7 +146,8 @@ class IterativeRAGPipeline:
     def _build_enhanced_query(
         self,
         current_sub_q: str,
-        intermediate_answers: Dict[str, str],
+        current_index: int,
+        intermediate_answers: Dict[int, str],
         previous_sub_qs: List[str]
     ) -> str:
         """Build enhanced query using previous answers.
@@ -162,8 +167,24 @@ class IterativeRAGPipeline:
             Enhanced query for retrieval.
         """
         if not self.use_iterative or not intermediate_answers:
+            if current_index < len(self.keywords):
+                return self.keywords[current_index]
             return current_sub_q
 
+        # current_keywords = self.keywords[current_index]
+        
+        parsed_question = self.resolve_question(
+            current_index,
+            intermediate_answers
+            )
+        self.sub_questions[current_index] = parsed_question
+
+        parsed_keywords = self.resolve_keyword(
+            current_index,
+            intermediate_answers)
+        
+        return parsed_keywords
+    
         # Build context from previous answers
         context_parts = []
         for prev_q in previous_sub_qs:
@@ -182,3 +203,57 @@ class IterativeRAGPipeline:
             return enhanced_query
         else:
             return current_sub_q
+        
+        
+    @staticmethod
+    def _find_dependencies(question):
+        """Find all ANSWER_X dependencies in a question"""
+        pattern = r'ANSWER_(\w+)'
+        return re.findall(pattern, question)
+    
+    def resolve_question(self, q_id,intermediate_answers: Dict[int, str], use_answers=True):
+        """Resolve a question by replacing ANSWER_X placeholders"""
+        if q_id > len(self.sub_questions):
+            raise ValueError(f"Question {q_id} not found")
+        
+        question = self.sub_questions[q_id]
+        
+        if not use_answers:
+            return question
+        
+        def replace_match(match):
+            ref_id =int( match.group(1))-1
+            ref_ans = intermediate_answers.get(ref_id)
+            if ref_ans :
+                return ref_ans
+            else:
+                raise ValueError(f"Question {q_id} not complete")
+                return match.group(0)  # Keep original if answer not available
+        
+        # Replace all ANSWER_X references
+        resolved = re.sub(r'ANSWER_(\w+)', replace_match, question)
+        return resolved
+    
+    def resolve_keyword(self, q_id,intermediate_answers: Dict[int, str], use_answers=True):
+        """Resolve a keyword by replacing ANSWER_X placeholders"""
+        if q_id > len(self.sub_questions):
+            raise ValueError(f"Question {q_id} not found")
+        
+        keyword = self.keywords[q_id]
+        
+        if not use_answers:
+            return keyword
+        
+        def replace_match(match):
+            ref_id = int( match.group(1))-1
+            ref_ans = intermediate_answers.get(ref_id)
+            
+            if ref_ans :
+                return ref_ans
+            else:
+                raise ValueError(f"Question {q_id} not complete")
+                return match.group(0)  # Keep original if answer not available
+        
+        # Replace all ANSWER_X references
+        resolved = re.sub(r'ANSWER_(\w+)', replace_match, keyword)
+        return resolved
