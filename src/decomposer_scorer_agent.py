@@ -40,6 +40,8 @@ class DecomposerScorerAgent(LLMAgent):
         """
         if decomposer_outputs == []:
             return ""
+        if len(decomposer_outputs) == 1:
+            return decomposer_outputs[0].get('final_answer')
         parts = [f"Question: {question}\n"]
         parts.append("Available decomposer outputs:\n")
         for i, d in enumerate(decomposer_outputs):
@@ -77,7 +79,7 @@ class DecomposerScorerAgent(LLMAgent):
     def _value_function(self, coalition_outputs: List[Dict], question: str, ground_truth: str) -> float:
         """Define the value of a coalition as the F1 score of the synthesized answer vs ground_truth."""
         synth = self.synthesize_answer(coalition_outputs, question)
-        print("getting answer:",synth)
+        # print("getting answer:",synth)
         # compute simple F1
         if not synth or not ground_truth:
             return 0.0
@@ -120,7 +122,7 @@ class DecomposerScorerAgent(LLMAgent):
                     from itertools import combinations
                     for S in combinations([x for x in ids if x != i], r):
                         S = list(S)
-                        print("\ntesting combinition:", S)
+                        # print("\ntesting combinition:", S)
                         weight = fact(r) * fact(n - r - 1) / fact(n)
                         v_S = self._value_function(outputs_for(S), question, ground_truth)
                         v_Si = self._value_function(outputs_for(S + [i]), question, ground_truth)

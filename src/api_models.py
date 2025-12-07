@@ -242,7 +242,7 @@ class DeepseekSiliconflowModel(APILanguageModel):
         }
         # 组合 provider 和 model_name
         model_full_name = f"{self.provider}/{self.model_name}"
-        print(f"Sending Request to {self.base_url} with model {model_full_name}")
+        # print(f"Sending Request to {self.base_url} with model {model_full_name}")
         data = {
             "model": model_full_name,
             "messages": [{"role": "user", "content": prompt}],

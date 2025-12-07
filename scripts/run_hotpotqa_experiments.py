@@ -597,6 +597,8 @@ def run_hotpotqa_experiment(
         if per_decomposer_details:
             avg_f1_decomposers = sum(d['components']['answer_f1'] for d in per_decomposer_details) / max(1, len(per_decomposer_details))
         baseline = (avg_f1_decomposers / total_tokens) if total_tokens > 0 else 0.0
+        print("\n")
+        print(f"average F1: {avg_f1_decomposers}; total tokens used: {total_tokens}")
         print(f"average efficiency: {baseline}\n")
 
         # compute shapley per token for each decomposer
@@ -606,6 +608,7 @@ def run_hotpotqa_experiment(
             shap = float(shapley_scores.get(did, 0.0) or 0.0)
             shap_per_token = None if tokens_used <= 0.0 else (shap / tokens_used)
             print(f"{did} score at {shap_per_token} ")
+            print(f"sh: {shap};  tokens used: {tokens_used}\n")
             # update decomposer_scores if present
             if did in decomposer_scores:
                 decomposer_scores[did]['components']['tokens_used'] = tokens_used
@@ -711,12 +714,13 @@ def main():
         "reasoner": "deepseek-ai/DeepSeek-V3",
         "decomposer_0": "openai/gpt-5.1",
         "decomposer_1": "deepseek-ai/DeepSeek-V3",
-        "decomposer_2": "Qwen/Qwen2.5-7B-Instruct"
+        "decomposer_2": "Qwen/Qwen2.5-7B-Instruct",
+        "scorer" : "openai/gpt-5.1",
     }
 
     results = run_hotpotqa_experiment(
         data_path="data/hotpot_dev_fullwiki_v1.json",
-        max_samples=3,  # Increased from 10 to 20
+        max_samples=40,  # Increased from 10 to 20
         num_agents=3,
         model_identifier="Qwen/Qwen2.5-7B-Instruct",  # Default model
         use_decomposer=True,
