@@ -17,17 +17,55 @@ import re
 
 class APILanguageModel:
     """Abstract interface for API‑accessed models."""
+    def __init__(self) -> None:
+        # Will be populated by concrete implementations when available.
+        # Expected keys (when available): prompt_tokens, completion_tokens, total_tokens
+        self.last_usage: Dict[str, int] = {}
+        # Accumulated numeric usage across all calls (e.g. total_tokens)
+        self.accumulated_usage: Dict[str, float] = {}
 
     def generate(self, prompt: str, max_tokens: int = 256, **kwargs: Any) -> str:
         raise NotImplementedError
+
+    def get_last_usage(self) -> Dict[str, int]:
+        """Return the last recorded token usage for this model, or empty dict."""
+        return getattr(self, "last_usage", {})
+
+    def accumulate_usage(self, usage: Optional[Dict[str, Any]]):
+        """Accumulate numeric fields from a usage dict into `accumulated_usage`.
+
+        Only numeric fields (int/float/strings representing digits) are summed.
+        """
+        if not usage:
+            return
+        for k, v in usage.items():
+            # ignore None or non-numeric
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+            if k == "input_tokens" or k == "prompt_tokens":
+                self.accumulated_usage["input_tokens"] = self.accumulated_usage.get("input_tokens", 0.0) + fv
+            if k == "output_tokens" or k == "completion_tokens":
+                self.accumulated_usage["output_tokens"] = self.accumulated_usage.get("output_tokens", 0.0) + fv
+                
+            # self.accumulated_usage[k] = self.accumulated_usage.get(k, 0.0) + fv
+            
+
+    def get_accumulated_usage(self) -> Dict[str, float]:
+        """Return a copy of accumulated usage."""
+        return dict(self.accumulated_usage)
 
 
 class OpenAIModel(APILanguageModel):
     """Wrapper around OpenAI’s ChatCompletion API."""
 
-    def __init__(self, model_name: str = "gpt-3.5-turbo", api_key: Optional[str] = None) -> None:
+    def __init__(self, model_name: str = "gpt-5", api_key: Optional[str] = None) -> None:
+        super().__init__()
         import openai  # type: ignore
-        openai.api_base = "https://n1n.ai/v1"
+        openai.base_url = "https://n1n.ai/v1/"
         self.model_name = model_name
         # Load API key from argument or environment
         key = api_key or os.getenv("OPENAI_API_KEY", "sk-qYNTLF2ymRyxKerLPNYSSQum3fXjHwDcM9rGtTwLXn6HFVoX")
@@ -44,13 +82,30 @@ class OpenAIModel(APILanguageModel):
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt},
         ]
-        response = self.openai.ChatCompletion.create(
+        response = self.openai.responses.create(
             model=self.model_name,
-            messages=messages,
-            max_tokens=max_tokens,
+            instructions="You are a helpful assistant.",
+            input = prompt,
+            # messages=messages,
+            max_output_tokens=max_tokens,
             temperature=temperature,
         )
-        return response["choices"][0]["message"]["content"].strip()
+        # Record usage if provided by the API
+        usage = response.usage
+        if usage:
+            # standard fields: prompt_tokens, completion_tokens, total_tokens
+            try:
+                self.last_usage = {
+                    k: int(v) for k, v in usage.items() if isinstance(v, (int, str)) and str(v).isdigit()
+                }
+            except Exception:
+                # best-effort: store raw usage dict
+                self.last_usage = dict(usage)
+            try:
+                self.accumulate_usage(self.last_usage)
+            except Exception:
+                pass
+        return response.output_text
 
 
 class AnthropicModel(APILanguageModel):
@@ -62,6 +117,7 @@ class AnthropicModel(APILanguageModel):
     """
 
     def __init__(self, model_name: str = "claude-3-opus-20240229", api_key: Optional[str] = None) -> None:
+        super().__init__()
         key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not key:
             raise ValueError(
@@ -87,9 +143,20 @@ class AnthropicModel(APILanguageModel):
         resp = requests.post(self.base_url, headers=headers, json=data, timeout=30)
         resp.raise_for_status()
         result = resp.json()
+        # Try to record usage information if present
+        usage = result.get("usage") or result.get("token_usage") or {}
+        if usage:
+            try:
+                self.last_usage = {k: int(v) for k, v in usage.items() if isinstance(v, (int, str)) and str(v).isdigit()}
+            except Exception:
+                self.last_usage = dict(usage)
+            try:
+                self.accumulate_usage(self.last_usage)
+            except Exception:
+                pass
         return result["content"][0]["text"].strip()
 
-
+#gemini-3-pro-preview-11-2025
 class GeminiModel(APILanguageModel):
     """Placeholder for Google’s Gemini API.
 
@@ -98,8 +165,49 @@ class GeminiModel(APILanguageModel):
     implemented, this class raises NotImplementedError.
     """
 
-    def __init__(self, model_name: str = "gemini-pro", api_key: Optional[str] = None) -> None:
-        raise NotImplementedError("Gemini API integration is not yet implemented.")
+    """Wrapper around OpenAI’s ChatCompletion API."""
+    def __init__(self, model_name: str = "gemini-3-pro-preview-11-2025", api_key: Optional[str] = None) -> None:
+        super().__init__()
+        import openai  # type: ignore
+        openai.api_base = "https://n1n.ai/v1"
+        self.model_name = model_name
+        # Load API key from argument or environment
+        key = api_key or os.getenv("OPENAI_API_KEY", "sk-qYNTLF2ymRyxKerLPNYSSQum3fXjHwDcM9rGtTwLXn6HFVoX")
+        if not key:
+            raise ValueError(
+                "OpenAI API key not provided. Set the OPENAI_API_KEY environment variable or pass api_key."
+            )
+        openai.api_key = key
+        self.openai = openai
+
+    def generate(self, prompt: str, max_tokens: int = 256, temperature: float = 0.7, **kwargs: Any) -> str:
+        # Use chat completion endpoint with a single system/user message
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt},
+        ]
+        response = self.openai.ChatCompletion.create(
+            model=self.model_name,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        # Record usage if provided by the API
+        usage = response.get("usage", {})
+        if usage:
+            # standard fields: prompt_tokens, completion_tokens, total_tokens
+            try:
+                self.last_usage = {
+                    k: int(v) for k, v in usage.items() if isinstance(v, (int, str)) and str(v).isdigit()
+                }
+            except Exception:
+                # best-effort: store raw usage dict
+                self.last_usage = dict(usage)
+            try:
+                self.accumulate_usage(self.last_usage)
+            except Exception:
+                pass
+        return response["choices"][0]["message"]["content"].strip()
 
 # Add DeepseekSiliconflowModel after GeminiModel
 
@@ -116,6 +224,7 @@ class DeepseekSiliconflowModel(APILanguageModel):
         api_key_prefix: str = "Bearer ",
         extra_headers: Optional[Dict[str, str]] = None,
     ) -> None:
+        super().__init__()
         self.provider = provider
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
@@ -147,6 +256,22 @@ class DeepseekSiliconflowModel(APILanguageModel):
             print(f"[Deepseek API Error] {e}\nStatus code: {getattr(e.response, 'status_code', None)}\nResponse text: {getattr(e.response, 'text', None)}")
             raise
         result = resp.json()
+        # Record usage information if available
+        usage = None
+        if isinstance(result, dict):
+            usage = result.get("usage") or result.get("token_usage")
+            # some services nest usage under choices[0].usage
+            if not usage and "choices" in result and result.get("choices"):
+                usage = result["choices"][0].get("usage")
+        if usage:
+            try:
+                self.last_usage = {k: int(v) for k, v in usage.items() if isinstance(v, (int, str)) and str(v).isdigit()}
+            except Exception:
+                self.last_usage = dict(usage)
+            try:
+                self.accumulate_usage(self.last_usage)
+            except Exception:
+                pass
         # Try to extract the text from common response formats
         if "choices" in result and result["choices"]:
             return result["choices"][0].get("text") or result["choices"][0].get("message", {}).get("content", "").strip()

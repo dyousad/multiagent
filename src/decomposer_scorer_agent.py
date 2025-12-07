@@ -30,12 +30,16 @@ class DecomposerScorerAgent(LLMAgent):
             "Always respond with the final answer text only (no JSON) when synthesizing."
         )
         super().__init__(agent_id=agent_id, model_identifier=model_identifier, role="scorer", system_prompt=system_prompt, max_tokens=max_tokens, temperature=temperature)
+        # cache mapping coalition key (sorted tuple of ids) -> { 'answer': str, 'usage': Dict }
+        self._synth_cache: Dict[Tuple[str, ...], Dict[str, Any]] = {}
 
     def synthesize_answer(self, decomposer_outputs: List[Dict[str, Any]], question: str) -> str:
         """Synthesize final answer using LLM from provided decomposer outputs.
 
         decomposer_outputs: list of dicts with keys 'sub_questions', 'keywords', 'pipeline_output' and 'final_answer' optional
         """
+        if decomposer_outputs == []:
+            return ""
         parts = [f"Question: {question}\n"]
         parts.append("Available decomposer outputs:\n")
         for i, d in enumerate(decomposer_outputs):
@@ -56,8 +60,9 @@ class DecomposerScorerAgent(LLMAgent):
             if agent_outputs:
                 parts.append("Evidence / agent outputs (short):\n")
                 for k, v in list(agent_outputs.items())[:3]:
-                    if isinstance(v, dict) and 'evidence' in v:
-                        parts.append(f"- {k}: {(' '.join(v.get('evidence')[:2]))}\n")
+                    if isinstance(v, dict) and 'evidence' in v and v.get('evidence'):
+                        ev = v.get('evidence') or []
+                        parts.append(f"- {k}: {(' '.join(ev[:2]))}\n")
                     else:
                         parts.append(f"- {k}: {str(v)[:200]}\n")
             # if decomposer already contains a final answer
@@ -142,3 +147,20 @@ class DecomposerScorerAgent(LLMAgent):
         for i in ids:
             shapley[i] = totals[i] / max(1, counts[i])
         return shapley
+
+    def get_synth_cache_serializable(self) -> List[Dict[str, Any]]:
+        """Return a JSON-serializable view of the internal synth cache.
+
+        Each entry is a dict: { 'coalition': [ids], 'answer': str, 'usage': Dict }
+        """
+        out: List[Dict[str, Any]] = []
+        for key, val in self._synth_cache.items():
+            # key is a tuple of ids
+            coalition = list(key)
+            entry = {
+                "coalition": coalition,
+                "answer": val.get("answer", ""),
+                "usage": val.get("usage", {}) or {},
+            }
+            out.append(entry)
+        return out

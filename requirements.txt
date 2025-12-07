@@ -6,4 +6,4 @@ sentence-transformers>=2.0.0
 faiss-cpu>=1.7.0
 transformers>=4.21.0
 torch>=1.12.0
-openai>=0.27.0
+openai>=2.9.0

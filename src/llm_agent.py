@@ -76,6 +76,8 @@ class LLMAgent(Agent):
                 max_tokens=self.max_tokens,
                 temperature=self.temperature
             )
+            print("\nthe usage of token is")
+            print(self.llm.get_last_usage())
             # Record this as a contribution
             self.record_contribution(response)
             return response

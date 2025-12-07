@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pprint
 import sys
 from pathlib import Path
 from typing import Dict, List, Set, Union
@@ -99,7 +100,7 @@ def create_agents_with_rag(
             role=role,
             system_prompt=system_prompt,
             max_tokens=512,
-            temperature=0.7
+            temperature=0.5
         )
         agents.append(agent)
 
@@ -183,8 +184,8 @@ def create_agents_with_rag(
                 reasoner = ReasonerAgent(
                     agent_id="reasoner",
                     model_identifier=reasoner_model,
-                    max_tokens=512,
-                    temperature=0.7
+                    max_tokens=2048,
+                    temperature=0.6
                 )
                 print("✓ Added ReasonerAgent")
             agents.append(reasoner)
@@ -202,7 +203,7 @@ def create_agents_with_rag(
         agent_id="decomposer",
         model_identifier=decomposer_model,
         max_tokens=512,
-        temperature=0.7
+        temperature=0.4
     )
 
     return agents, decomposer
@@ -307,9 +308,33 @@ def run_hotpotqa_experiment(
                 agent_id=name,
                 model_identifier=model_id,
                 max_tokens=512,
-                temperature=0.7
+                temperature=0.6
             )
         )
+
+    # 为每个 decomposer 创建独立 reasoner agent
+    reasoner_agents = []
+    use_reasoner_v3 = use_v3
+    for i, decomp in enumerate(decomposer_agents):
+        reasoner_model_id = decomp.model_identifier
+        if use_reasoner_v3:
+            from reasoner_agent_v3 import ReasonerAgentV3
+            reasoner = ReasonerAgentV3(
+                agent_id=f"reasoner_{i}",
+                model_identifier=reasoner_model_id,
+                max_tokens=1024,
+                temperature=0.3
+            )
+        else:
+            from reasoner_agent import ReasonerAgent
+            reasoner = ReasonerAgent(
+                agent_id=f"reasoner_{i}",
+                model_identifier=reasoner_model_id,
+                max_tokens=2048,
+                temperature=0.6
+            )
+        reasoner_agents.append(reasoner)
+    print(f"✓ Added {len(reasoner_agents)} reasoner agents (one per decomposer)")
 
     # 创建一个评分 agent（用于基于 decomposer 输出合成答案并计算 Shapley）
     from decomposer_scorer_agent import DecomposerScorerAgent
@@ -356,8 +381,8 @@ def run_hotpotqa_experiment(
 
         print(f"Question: {task_data['question']}")
         print(f"Answer: {task_data['answer']}")
-
-        # Find required agents
+        
+         # Find required agents
         retriever_agent = None
         verifier_agent = None
         reasoner_agent = None
@@ -367,13 +392,42 @@ def run_hotpotqa_experiment(
                     retriever_agent = agent
                 elif agent.role in ['verifier', 'evidence_verifier']:
                     verifier_agent = agent
-                elif agent.role == 'reasoner':
-                    reasoner_agent = agent
+        
+
+        # Helper to sum numeric usage fields into a single token count estimate
+        def sum_usage(u: Dict[str, float]) -> float:
+            if not u:
+                return 0.0
+            # prefer total_tokens if present
+            try:
+                return u["input_tokens"] + 6.0*u["output_tokens"]
+            except Exception:
+                return 0.0
+
+        # Snapshot usage at sample start for shared agents
+        scorer_start_usage = scorer_agent.llm.get_accumulated_usage() if getattr(scorer_agent, 'llm', None) else {}
+        retriever_start_usage = retriever_agent.llm.get_accumulated_usage() if (retriever_agent and getattr(retriever_agent, 'llm', None)) else {}
+        verifier_start_usage = verifier_agent.llm.get_accumulated_usage() if (verifier_agent and getattr(verifier_agent, 'llm', None)) else {}
+
+       
+        # 不再全局找 reasoner_agent，改为每个 decomposer 配对
 
         # 多 decomposer 分别调用 pipeline
         decomposer_results = []
-        for decomp_agent in decomposer_agents:
+        for i, decomp_agent in enumerate(decomposer_agents):
             print(f"\n>>> Using decomposer: {decomp_agent.model_identifier}")
+            # snapshot usage for this decomposer+its reasoner before work
+            before_tokens = 0.0
+            try:
+                before_tokens += sum_usage(decomp_agent.llm.get_accumulated_usage()) if getattr(decomp_agent, 'llm', None) else 0.0
+            except Exception:
+                pass
+            reasoner_agent = reasoner_agents[i] if i < len(reasoner_agents) else None
+            try:
+                before_tokens += sum_usage(reasoner_agent.llm.get_accumulated_usage()) if (reasoner_agent and getattr(reasoner_agent, 'llm', None)) else 0.0
+            except Exception:
+                pass
+
             try:
                 decomposition = decomp_agent.decompose_question(task_data['question'])
                 sub_questions = decomposition.get("sub_questions", [])
@@ -381,6 +435,9 @@ def run_hotpotqa_experiment(
                 evidence_paths = []
                 pipeline_output = {}
                 final_answer = ""
+
+                # 每个 decomposer 用自己的 reasoner
+                reasoner_agent = reasoner_agents[i] if i < len(reasoner_agents) else None
 
                 if use_rag and use_iterative and use_v3 and all([retriever_agent, verifier_agent, reasoner_agent]):
                     from iterative_rag_pipeline import IterativeRAGPipeline
@@ -411,6 +468,18 @@ def run_hotpotqa_experiment(
                     evidence_paths = []
                     final_answer = ""
 
+                # compute tokens used by this decomposer (decomposer llm + its reasoner)
+                after_tokens = 0.0
+                try:
+                    after_tokens += sum_usage(decomp_agent.llm.get_accumulated_usage()) if getattr(decomp_agent, 'llm', None) else 0.0
+                except Exception:
+                    pass
+                try:
+                    after_tokens += sum_usage(reasoner_agent.llm.get_accumulated_usage()) if (reasoner_agent and getattr(reasoner_agent, 'llm', None)) else 0.0
+                except Exception:
+                    pass
+                tokens_used = max(0.0, after_tokens - before_tokens)
+
                 # 结果收集
                 decomposer_results.append( {
                     "sub_questions": sub_questions,
@@ -418,6 +487,7 @@ def run_hotpotqa_experiment(
                     "pipeline_output": pipeline_output,
                     "final_answer": final_answer,
                     "decomposer" : decomp_agent.model_identifier,
+                    "tokens_used": tokens_used,
                 })
             except Exception as e:
                 print(f"Warning: pipeline failed for decomposer {decomp_agent.model_identifier}: {e}")
@@ -502,220 +572,51 @@ def run_hotpotqa_experiment(
             shapley_scores = {}
             
         print("shapley values:",shapley_scores)
-        # Static credit allocation (Shapley)
-        
-        # def calculate_meaningful_contributions(agent_outputs, final_answer, ground_truth, task_data):
-        #     """Calculate contributions based on actual impact on task performance."""
-        #     contributions = {}
-        #     print("")
-        #     for agent_id, output in agent_outputs.items():
-        #         # Start with baseline contribution
-        #         score = 0.1  # Base minimum contribution for participation
-                
-        #         # 1. Semantic relevance to final answer
-        #         if final_answer and output:
-        #             answer_similarity = calculate_semantic_similarity(output, final_answer)
-        #             score += answer_similarity * 0.3
-                
-        #         # 2. Evidence quality (for RAG agents)
-        #         if "evidence" in str(output).lower() or "retrieve" in agent_id.lower():
-        #             evidence_score = calculate_evidence_relevance(output, task_data.get('context', []))
-        #             score += evidence_score * 0.3
-                
-        #         # 3. Reasoning quality
-        #         reasoning_score = assess_reasoning_quality(output, task_data['question'])
-        #         score += reasoning_score * 0.3
-                
-        #         # 4. Role-based baseline contributions
-        #         if "reason" in agent_id.lower():
-        #             score += 0.2  # Reasoner gets extra baseline
-        #         elif "retrieve" in agent_id.lower():
-        #             score += 0.15  # Retriever baseline
-        #         elif "verif" in agent_id.lower():
-        #             score += 0.1  # Verifier baseline
-                
-        #         contributions[agent_id] = min(score, 1.0)  # Cap at 1.0
-            
-        #     return contributions
-        
-        # def calculate_semantic_similarity(text1, text2):
-        #     """Calculate semantic similarity between two texts."""
-        #     if not text1 or not text2:
-        #         return 0.0
-            
-        #     # Simple word overlap as fallback
-        #     words1 = set(text1.lower().split())
-        #     words2 = set(text2.lower().split())
-            
-        #     if not words1 or not words2:
-        #         return 0.0
-            
-        #     overlap = len(words1.intersection(words2))
-        #     return overlap / max(len(words1), len(words2))
+        # compute token deltas for scorer/retriever/verifier and total tokens
+        try:
+            scorer_end_usage = scorer_agent.llm.get_accumulated_usage() if getattr(scorer_agent, 'llm', None) else {}
+        except Exception:
+            scorer_end_usage = {}
+        try:
+            retriever_end_usage = retriever_agent.llm.get_accumulated_usage() if (retriever_agent and getattr(retriever_agent, 'llm', None)) else {}
+        except Exception:
+            retriever_end_usage = {}
+        try:
+            verifier_end_usage = verifier_agent.llm.get_accumulated_usage() if (verifier_agent and getattr(verifier_agent, 'llm', None)) else {}
+        except Exception:
+            verifier_end_usage = {}
 
-        # def calculate_evidence_relevance(output, context):
-        #     """Calculate how relevant the evidence is to the context."""
-        #     if not context:
-        #         return 0.0
-            
-        #     # Count named entities that match context
-        #     try:
-        #         doc = nlp(output)
-        #         context_doc = nlp(" ".join(context))
-                
-        #         context_entities = set(ent.text.lower() for ent in context_doc.ents)
-        #         output_entities = set(ent.text.lower() for ent in doc.ents)
-                
-        #         if not context_entities:
-        #             return 0.0
-                    
-        #         overlap = len(output_entities.intersection(context_entities))
-        #         return overlap / len(context_entities)
-        #     except:
-        #         return 0.0
+        total_decomposer_tokens = sum((d.get('tokens_used', 0.0) for d in decomposer_results))
+        total_scorer_tokens = max(0.0, sum_usage(scorer_end_usage) - sum_usage(scorer_start_usage))
+        total_retriever_tokens = max(0.0, sum_usage(retriever_end_usage) - sum_usage(retriever_start_usage))
+        total_verifier_tokens = max(0.0, sum_usage(verifier_end_usage) - sum_usage(verifier_start_usage))
+        total_tokens = total_decomposer_tokens + total_scorer_tokens + total_retriever_tokens + total_verifier_tokens
 
-        # def assess_reasoning_quality(output, question):
-        #     """Assess the quality of reasoning in the output."""
-        #     reasoning_indicators = [
-        #         "because", "therefore", "thus", "since", "as a result",
-        #         "first", "second", "then", "finally", "conclusion"
-        #     ]
-            
-        #     output_lower = output.lower()
-        #     indicator_count = sum(1 for indicator in reasoning_indicators 
-        #                         if indicator in output_lower)
-            
-        #     # Normalize by text length
-        #     word_count = len(output.split())
-        #     if word_count == 0:
-        #         return 0.0
-            
-        #     return min(indicator_count / (word_count / 50), 1.0)  # Cap at 1.0
-        
-        # # Enhanced value function that models synergy
-        # def create_synergistic_value_function(contributions, task_data, final_answer, ground_truth):
-        #     """Create a value function that captures agent synergy."""
-            
-        #     def value_function(coalition: Set[str]) -> float:
-        #         if not coalition:
-        #             return 0.0
-                
-        #         # Base value: sum of individual contributions
-        #         base_value = sum(contributions.get(agent, 0.0) for agent in coalition)
-                
-        #         # Synergy bonus: agents working together create more value
-        #         synergy_bonus = 0.0
-                
-        #         # Check for complementary agent types
-        #         agent_types = [agent.split('_')[0] for agent in coalition]  # Extract agent type prefix
-                
-        #         # Bonus for having both retrieval and reasoning agents
-        #         if any('retrieve' in agent for agent in coalition) and any('reason' in agent for agent in coalition):
-        #             synergy_bonus += 0.3
-                
-        #         # Bonus for verifier presence
-        #         if any('verif' in agent for agent in coalition):
-        #             synergy_bonus += 0.2
-                
-        #         # Penalty for missing critical roles in complex questions
-        #         question_complexity = len(task_data.get('question', '').split())
-        #         if question_complexity > 10 and any('decompose' in agent for agent in coalition):
-        #             synergy_bonus += 0.2
-                
-        #         # Scale synergy by coalition size (diminishing returns)
-        #         synergy_bonus *= max(0, (1 - 0.05 * len(coalition)))  # Much gentler scaling
-                
-        #         return min(base_value * (1 + synergy_bonus), 1.0)  # Cap at 1.0
-            
-        #     return value_function
-        
-        # def validate_shapley_values(shapley_values, contributions, agent_outputs):
-        #     """Validate that Shapley values make sense."""
-        #     print("\n--- Shapley Value Validation ---")
-            
-        #     total_shapley = sum(shapley_values.values())
-        #     print(f"Total Shapley value: {total_shapley:.3f}")
-            
-        #     for agent_id, shapley_val in shapley_values.items():
-        #         contribution = contributions.get(agent_id, 0.0)
-        #         output_preview = agent_outputs.get(agent_id, "")[:100] + "..." if agent_outputs.get(agent_id) else "None"
-                
-        #         print(f"{agent_id}:")
-        #         print(f"  Shapley: {shapley_val:.3f}")
-        #         print(f"  Contribution: {contribution:.3f}")
-        #         print(f"  Output: {output_preview}")
-                
-        #         # Check for anomalies
-        #         if shapley_val > 1.0:
-        #             print(f"  ⚠ High Shapley value!")
-        #         if shapley_val < 0:
-        #             print(f"  ⚠ Negative Shapley value!")
+        # baseline: average F1 across decomposers divided by total tokens (per-sample)
+        avg_f1_decomposers = 0.0
+        if per_decomposer_details:
+            avg_f1_decomposers = sum(d['components']['answer_f1'] for d in per_decomposer_details) / max(1, len(per_decomposer_details))
+        baseline = (avg_f1_decomposers / total_tokens) if total_tokens > 0 else 0.0
+        print(f"average efficiency: {baseline}\n")
 
-
-        # qa_result = [ evaluate_ans(ans) for ans in decomposer_results]  # deprecated
-
-        # contributions = [calculate_meaningful_contributions(
-        #     agent_outputs=res["agent_outputs"],
-        #     final_answer=res["final_answer"],
-        #     ground_truth=res["ground_truth"],
-        #     task_data=res["task_data"]
-        # ) for res in qa_result]
-        
-        # value_function = create_synergistic_value_function(
-        #     contributions=contributions,
-        #     task_data=task_data,
-        #     final_answer=final_answer,
-        #     ground_truth=ground_truth
-        # )
-
-        
-        # static_rewards = reward_manager.allocate_shapley_rewards(
-        #     agents=agents,
-        #     contributions=contributions,  # Still needed for fallback
-        #     value_function=value_function,  # Use our improved function
-        #     use_monte_carlo=True,
-        #     num_samples=200  # Increased samples for better accuracy
-        # )
-
-        # validate_shapley_values(static_rewards, contributions, agent_outputs)
-        
-        # Calculate static credit entropy
-        # static_entropy = reward_manager.get_credit_entropy(static_rewards)
-
-        # Dynamic credit allocation (only for valid answers)
-        # dynamic_credits = {}
-        # dynamic_entropy = 0.0
-        # if use_dynamic_credit:
-        #     # Check if answer is valid before updating credit
-        #     if final_answer and final_answer not in ["unknown", "Error: No question provided", "No evidence found."]:
-        #         # Define evaluation function
-        #         def f1_eval(pred: str, truth: str) -> float:
-        #             pred_tokens = set(pred.lower().split())
-        #             truth_tokens = set(truth.lower().split())
-        #             if not pred_tokens or not truth_tokens:
-        #                 return 0.0
-        #             common = pred_tokens & truth_tokens
-        #             if not common:
-        #                 return 0.0
-        #             precision = len(common) / len(pred_tokens)
-        #             recall = len(common) / len(truth_tokens)
-        #             return 2 * (precision * recall) / (precision + recall)
-
-        #         dynamic_credits = reward_manager.update_credits_dynamic(
-        #             agent_outputs=agent_outputs,
-        #             final_answer=final_answer,
-        #             ground_truth=ground_truth,
-        #             evaluate_fn=f1_eval
-        #         )
-        #         dynamic_entropy = reward_manager.get_credit_entropy(dynamic_credits)
-
-        #         print(f"Dynamic Credits: {dynamic_credits}")
-        #     else:
-        #         print(f"⚠ Skipping credit update: invalid final answer")
-
-        # Record results with enhanced logging (as per workflow spec)
-
-        # Compose sample-level result with decomposer scores
+        # compute shapley per token for each decomposer
+        for d in decomposer_results:
+            did = d.get('decomposer')
+            tokens_used = float(d.get('tokens_used', 0.0) or 0.0)
+            shap = float(shapley_scores.get(did, 0.0) or 0.0)
+            shap_per_token = None if tokens_used <= 0.0 else (shap / tokens_used)
+            print(f"{did} score at {shap_per_token} ")
+            # update decomposer_scores if present
+            if did in decomposer_scores:
+                decomposer_scores[did]['components']['tokens_used'] = tokens_used
+                decomposer_scores[did]['components']['shapley_per_token'] = shap_per_token
+            # also add to per_decomposer_details entries
+            for pd in per_decomposer_details:
+                if pd.get('decomposer') == did:
+                    pd['components']['tokens_used'] = tokens_used
+                    pd['components']['shapley_per_token'] = shap_per_token
+                    break
+ 
         sample_result = {
             "sample_id": idx,
             "question": task_data['question'],
@@ -725,6 +626,29 @@ def run_hotpotqa_experiment(
             "ground_truth": task_data['answer'],
             "best_f1": best_f1,
             "any_exact": any_exact,
+            # Shapley values per decomposer as computed by the scorer agent
+            "decomposer_shapley": shapley_scores,
+            # baseline metric: average F1 across decomposers divided by total tokens
+            "baseline_avgF1_per_token": baseline,
+            "total_tokens": total_tokens,
+            "total_decomposer_tokens": total_decomposer_tokens,
+            "total_scorer_tokens": total_scorer_tokens,
+            "total_retriever_tokens": total_retriever_tokens,
+            "total_verifier_tokens": total_verifier_tokens,
+            # accumulated usage (tokens etc.) observed by the scorer agent's API model
+            "accumulated_usage": scorer_agent.llm.get_accumulated_usage() if getattr(scorer_agent, 'llm', None) else {},
+            # accumulated usage for each decomposer and for the reasoner (if present)
+            "agent_accumulated_usage": {
+                **{
+                    decomp.model_identifier: (decomp.llm.get_accumulated_usage() if getattr(decomp, 'llm', None) else {})
+                    for decomp in decomposer_agents
+                },
+                **({
+                    reasoner_agent.model_identifier: (reasoner_agent.llm.get_accumulated_usage() if getattr(reasoner_agent, 'llm', None) else {})
+                } if reasoner_agent else {})
+            },
+            # scorer synth cache entries
+            "scorer_synth_cache": scorer_agent.get_synth_cache_serializable() if hasattr(scorer_agent, 'get_synth_cache_serializable') else [],
         }
         results["samples"].append(sample_result)
 
@@ -782,17 +706,17 @@ def main():
     agent_models = {
         "agent_0": "Qwen/Qwen2.5-7B-Instruct",
         "agent_1": "deepseek-ai/DeepSeek-V3",
-        "agent_2": "openai/gpt-4-turbo",
-        "verifier": "openai/gpt-4-turbo",
+        "agent_2": "openai/gpt-5.1",
+        "verifier": "openai/gpt-5.1",
         "reasoner": "deepseek-ai/DeepSeek-V3",
-        "decomposer_0": "Qwen/Qwen2.5-7B-Instruct",
+        "decomposer_0": "openai/gpt-5.1",
         "decomposer_1": "deepseek-ai/DeepSeek-V3",
-        "decomposer_2": "openai/gpt-4-turbo"
+        "decomposer_2": "Qwen/Qwen2.5-7B-Instruct"
     }
 
     results = run_hotpotqa_experiment(
         data_path="data/hotpot_dev_fullwiki_v1.json",
-        max_samples=8,  # Increased from 10 to 20
+        max_samples=3,  # Increased from 10 to 20
         num_agents=3,
         model_identifier="Qwen/Qwen2.5-7B-Instruct",  # Default model
         use_decomposer=True,
@@ -801,6 +725,8 @@ def main():
         agent_model_identifiers=agent_models,
         output_dir=Path("results/hotpotqa_rag_fix")  # New output directory
     )
+    
+    # pprint.pprint(results)
 
 
 if __name__ == "__main__":
